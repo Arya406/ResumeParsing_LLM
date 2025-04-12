@@ -1,7 +1,10 @@
 import React, { useState } from 'react';
-import { Upload, FileText, Briefcase, Code, FolderGit2, AlertCircle, Info } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Upload, FileText, Briefcase, Code, FolderGit2, AlertCircle, Info, MessageSquare } from 'lucide-react';
+import './index.css'
 
 interface ParsedResume {
+  name?: string;
   skills: {
     skills?: string[];
   };
@@ -19,11 +22,13 @@ interface ParsedResume {
 }
 
 function App() {
+  const navigate = useNavigate();
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [debug, setDebug] = useState<string | null>(null);
   const [parsedData, setParsedData] = useState<ParsedResume | null>(null);
+  const [interviewLoading, setInterviewLoading] = useState(false);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setError(null);
@@ -71,9 +76,9 @@ function App() {
 
       // Update state with defaults for safety
       setParsedData({
+        name: data.name || '',
         skills: {
           skills: Array.isArray(data.skills) ? data.skills : [],
-          
         },
         experience: Array.isArray(data.experience)
           ? data.experience.map((exp: any) => ({
@@ -89,7 +94,6 @@ function App() {
           : []
       });
       
-
     } catch (error) {
       console.error('Error parsing resume:', error);
       setError(error instanceof Error ? error.message : 'Failed to parse resume. Please try again.');
@@ -98,12 +102,54 @@ function App() {
     }
   };
 
+  const startInterview = async () => {
+    if (!parsedData) return;
+    
+    setInterviewLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch('http://localhost:5000/start-interview', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          resumeData: parsedData
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to start interview');
+      }
+
+      // Store parsed resume data in localStorage to access it in the interview page
+      localStorage.setItem('resumeData', JSON.stringify(parsedData));
+      
+      // Navigate to the interview page with the interview ID
+      navigate(`/interview/${data.interviewId}`, { 
+        state: { 
+          initialMessage: data.message,
+          interviewStatus: data.interviewStatus 
+        } 
+      });
+      
+    } catch (error) {
+      console.error('Error starting interview:', error);
+      setError(error instanceof Error ? error.message : 'Failed to start interview. Please try again.');
+    } finally {
+      setInterviewLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-4xl mx-auto py-12 px-4">
         <div className="text-center mb-12">
-          <h1 className="text-4xl font-bold text-gray-900 mb-4">Resume Parser</h1>
-          <p className="text-lg text-gray-600">Upload your resume and let AI extract the key information</p>
+          <h1 className="text-4xl font-bold text-gray-900 mb-4">AI Interview Simulator</h1>
+          <p className="text-lg text-gray-600">Upload your resume and practice with an AI interviewer</p>
         </div>
 
         {error && (
@@ -150,76 +196,95 @@ function App() {
         </form>
 
         {parsedData && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-              <div className="flex items-center mb-4">
-                <Code className="w-5 h-5 text-blue-500 mr-2" />
-                <h2 className="text-xl font-semibold text-gray-900">Skills</h2>
+          <div className="mb-12">
+            {parsedData.name && (
+              <div className="text-center mb-6">
+                <h2 className="text-2xl font-bold text-gray-900">Hello, {parsedData.name}!</h2>
+                <p className="text-gray-600">Here's what we found in your resume:</p>
               </div>
-              {Object.entries(parsedData.skills).length > 0 ? (
-                Object.entries(parsedData.skills).map(([category, list]) => (
-                  <div key={category} className="mb-3">
-                    <h4 className="text-sm font-semibold text-gray-700 mb-1 capitalize">{category}</h4>
-                    <div className="flex flex-wrap gap-2">
-                      {list?.map((skill, i) => (
-                        <span key={i} className="px-3 py-1 bg-blue-50 text-blue-700 rounded-full text-sm">
-                          {skill}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <p className="text-sm text-gray-500">No skills detected</p>
-              )}
-            </div>
-
-            <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-              <div className="flex items-center mb-4">
-                <Briefcase className="w-5 h-5 text-green-500 mr-2" />
-                <h2 className="text-xl font-semibold text-gray-900">Experience</h2>
-              </div>
-              {parsedData.experience.length > 0 ? (
-                <div className="space-y-4">
-                  {parsedData.experience.map((exp, index) => (
-                    <div key={index} className="border-b border-gray-100 pb-4 last:border-0 last:pb-0">
-                      <h3 className="font-medium text-gray-900">{exp.title}</h3>
-                      <p className="text-sm text-gray-600">{exp.company} • {exp.duration}</p>
-                      <ul className="list-disc list-inside text-sm text-gray-700 mt-2">
-                        {exp.achievements.map((point, i) => (
-                          <li key={i}>{point}</li>
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+              <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                <div className="flex items-center mb-4">
+                  <Code className="w-5 h-5 text-blue-500 mr-2" />
+                  <h2 className="text-xl font-semibold text-gray-900">Skills</h2>
+                </div>
+                {Object.entries(parsedData.skills).length > 0 ? (
+                  Object.entries(parsedData.skills).map(([category, list]) => (
+                    <div key={category} className="mb-3">
+                      <h4 className="text-sm font-semibold text-gray-700 mb-1 capitalize">{category}</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {list?.map((skill, i) => (
+                          <span key={i} className="px-3 py-1 bg-blue-50 text-blue-700 rounded-full text-sm">
+                            {skill}
+                          </span>
                         ))}
-                      </ul>
+                      </div>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-gray-500">No experience detected</p>
-              )}
-            </div>
-
-            <div className="md:col-span-2 bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-              <div className="flex items-center mb-4">
-                <FolderGit2 className="w-5 h-5 text-purple-500 mr-2" />
-                <h2 className="text-xl font-semibold text-gray-900">Projects</h2>
+                  ))
+                ) : (
+                  <p className="text-sm text-gray-500">No skills detected</p>
+                )}
               </div>
-              {parsedData.projects.length > 0 ? (
-                <div className="grid gap-4">
-                  {parsedData.projects.map((project, index) => (
-                    <div key={index} className="border-b border-gray-100 pb-4 last:border-0 last:pb-0">
-                      <h3 className="font-medium text-gray-900">{project.title}</h3>
-                      <p className="mt-1 text-sm text-gray-700">{project.description}</p>
-                      {project.link && (
-                        <a href={project.link} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block text-sm text-blue-600 hover:text-blue-800">
-                          View Project →
-                        </a>
-                      )}
-                    </div>
-                  ))}
+
+              <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                <div className="flex items-center mb-4">
+                  <Briefcase className="w-5 h-5 text-green-500 mr-2" />
+                  <h2 className="text-xl font-semibold text-gray-900">Experience</h2>
                 </div>
-              ) : (
-                <p className="text-sm text-gray-500">No projects detected</p>
-              )}
+                {parsedData.experience.length > 0 ? (
+                  <div className="space-y-4">
+                    {parsedData.experience.map((exp, index) => (
+                      <div key={index} className="border-b border-gray-100 pb-4 last:border-0 last:pb-0">
+                        <h3 className="font-medium text-gray-900">{exp.title}</h3>
+                        <p className="text-sm text-gray-600">{exp.company} • {exp.duration}</p>
+                        <ul className="list-disc list-inside text-sm text-gray-700 mt-2">
+                          {exp.achievements.map((point, i) => (
+                            <li key={i}>{point}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-500">No experience detected</p>
+                )}
+              </div>
+
+              <div className="md:col-span-2 bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                <div className="flex items-center mb-4">
+                  <FolderGit2 className="w-5 h-5 text-purple-500 mr-2" />
+                  <h2 className="text-xl font-semibold text-gray-900">Projects</h2>
+                </div>
+                {parsedData.projects.length > 0 ? (
+                  <div className="grid gap-4">
+                    {parsedData.projects.map((project, index) => (
+                      <div key={index} className="border-b border-gray-100 pb-4 last:border-0 last:pb-0">
+                        <h3 className="font-medium text-gray-900">{project.title}</h3>
+                        <p className="mt-1 text-sm text-gray-700">{project.description}</p>
+                        {project.link && (
+                          <a href={project.link} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block text-sm text-blue-600 hover:text-blue-800">
+                            View Project →
+                          </a>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-500">No projects detected</p>
+                )}
+              </div>
+            </div>
+            
+            <div className="flex justify-center">
+              <button
+                onClick={startInterview}
+                disabled={interviewLoading}
+                className={`flex items-center px-6 py-3 rounded-lg text-white text-lg font-medium ${interviewLoading ? 'bg-gray-400' : 'bg-green-600 hover:bg-green-700'} transition-colors`}
+              >
+                <MessageSquare className="w-5 h-5 mr-2" />
+                {interviewLoading ? 'Starting...' : 'Start Virtual Interview'}
+              </button>
             </div>
           </div>
         )}

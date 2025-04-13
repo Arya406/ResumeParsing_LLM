@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Briefcase, Award, Send, MessageSquare, ArrowLeft, X, List, AlertTriangle } from 'lucide-react';
-import './index.css'
+import { Briefcase, Award, ArrowLeft, X, List, AlertTriangle, Mic, Volume2, VolumeX } from 'lucide-react';
+import './index.css';
 
 interface ParsedResume {
     name?: string;
@@ -34,6 +34,12 @@ interface LocationState {
     interviewStatus?: 'not_started' | 'in_progress' | 'completed';
 }
 
+interface VoiceControls {
+    isListening: boolean;
+    isSpeaking: boolean;
+    isAudioEnabled: boolean;
+}
+
 function InterviewPage() {
     const { interviewId } = useParams<{ interviewId: string }>();
     const navigate = useNavigate();
@@ -51,8 +57,104 @@ function InterviewPage() {
     const [error, setError] = useState<string | null>(null);
     const [questionsAsked, setQuestionsAsked] = useState(0);
     const [lowScoreStreak, setLowScoreStreak] = useState(0);
+    const [voiceControls, setVoiceControls] = useState<VoiceControls>({
+        isListening: false,
+        isSpeaking: false,
+        isAudioEnabled: true
+    });
+    const [isSpeaking, setIsSpeaking] = useState(false);
+    const [interimTranscript, setInterimTranscript] = useState('');
+
+    const speechRecognition = useRef<any>(null);
+    const silenceTimer = useRef<NodeJS.Timeout | null>(null);
+    const speechSynthesis = useRef<any>(null);
 
     useEffect(() => {
+        // Initialize speech recognition
+        const initSpeechRecognition = () => {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (SpeechRecognition) {
+                const recognition = new SpeechRecognition();
+                recognition.continuous = true;
+                recognition.interimResults = true;
+                recognition.lang = 'en-US';
+                
+                recognition.onresult = (event: any) => {
+                    let finalTranscript = '';
+                    let interimTranscript = '';
+                    
+                    for (let i = event.resultIndex; i < event.results.length; i++) {
+                        const transcript = event.results[i][0].transcript;
+                        if (event.results[i].isFinal) {
+                            finalTranscript += transcript;
+                        } else {
+                            interimTranscript += transcript;
+                        }
+                    }
+                    
+                    if (finalTranscript) {
+                        // Clear any existing silence timer
+                        if (silenceTimer.current) {
+                            clearTimeout(silenceTimer.current);
+                            silenceTimer.current = null;
+                        }
+                        
+                        setUserResponse(prev => prev + ' ' + finalTranscript);
+                        setInterimTranscript('');
+                        setIsSpeaking(false);
+                        
+                        // Auto-submit if we have a final transcript
+                        if (!interviewLoading) {
+                            sendResponse();
+                        }
+                    } else if (interimTranscript) {
+                        setInterimTranscript(interimTranscript);
+                        setIsSpeaking(true);
+                        
+                        // Reset the silence timer
+                        if (silenceTimer.current) {
+                            clearTimeout(silenceTimer.current);
+                        }
+                        silenceTimer.current = setTimeout(() => {
+                            if (userResponse.trim() || interimTranscript.trim()) {
+                                const fullResponse = userResponse + ' ' + interimTranscript;
+                                setUserResponse(fullResponse.trim());
+                                setInterimTranscript('');
+                                setIsSpeaking(false);
+                                if (!interviewLoading) {
+                                    sendResponse();
+                                }
+                            }
+                        }, 2000); // 2 seconds of silence
+                    }
+                };
+                
+                recognition.onerror = (event: any) => {
+                    console.error('Speech recognition error', event.error);
+                    setError('Speech recognition error. Please try again.');
+                    setVoiceControls(prev => ({ ...prev, isListening: false }));
+                };
+                
+                recognition.onend = () => {
+                    if (voiceControls.isListening) {
+                        recognition.start();
+                    }
+                };
+                
+                speechRecognition.current = recognition;
+            } else {
+                setError('Speech recognition not supported in this browser');
+            }
+        };
+
+        // Initialize speech synthesis
+        if ('speechSynthesis' in window) {
+            speechSynthesis.current = window.speechSynthesis;
+        } else {
+            setError('Speech synthesis not supported in this browser');
+        }
+
+        // Load resume data
         try {
             const savedResumeData = localStorage.getItem('resumeData');
             if (savedResumeData) {
@@ -75,14 +177,83 @@ function InterviewPage() {
             console.error('Error loading resume data:', error);
             setError('Error loading resume data. Please return to the home page.');
         }
-    }, [state]);
+
+        initSpeechRecognition();
+
+        return () => {
+            if (silenceTimer.current) {
+                clearTimeout(silenceTimer.current);
+            }
+            if (speechRecognition.current) {
+                speechRecognition.current.stop();
+            }
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!voiceControls.isAudioEnabled || !speechSynthesis.current) return;
+
+        const lastMessage = interviewMessages[interviewMessages.length - 1];
+        if (lastMessage?.type === 'interviewer' && !lastMessage.isTyping) {
+            speakMessage(lastMessage.content);
+        }
+    }, [interviewMessages, voiceControls.isAudioEnabled]);
+
+    const speakMessage = (text: string) => {
+        if (!speechSynthesis.current || !voiceControls.isAudioEnabled) return;
+
+        setVoiceControls(prev => ({ ...prev, isSpeaking: true }));
+        
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1;
+        utterance.pitch = 1;
+        utterance.volume = 1;
+        
+        utterance.onend = () => {
+            setVoiceControls(prev => ({ ...prev, isSpeaking: false }));
+        };
+        
+        speechSynthesis.current.speak(utterance);
+    };
+
+    const toggleListening = () => {
+        if (!speechRecognition.current) return;
+
+        if (voiceControls.isListening) {
+            speechRecognition.current.stop();
+            setVoiceControls(prev => ({ ...prev, isListening: false }));
+            setIsSpeaking(false);
+            
+            // If we have any interim transcript, submit it
+            if (interimTranscript.trim() || userResponse.trim()) {
+                const fullResponse = userResponse + ' ' + interimTranscript;
+                setUserResponse(fullResponse.trim());
+                setInterimTranscript('');
+                if (!interviewLoading) {
+                    sendResponse();
+                }
+            }
+        } else {
+            setUserResponse('');
+            setInterimTranscript('');
+            speechRecognition.current.start();
+            setVoiceControls(prev => ({ ...prev, isListening: true }));
+        }
+    };
+
+    const toggleAudio = () => {
+        if (voiceControls.isSpeaking) {
+            speechSynthesis.current.cancel();
+        }
+        setVoiceControls(prev => ({ ...prev, isAudioEnabled: !prev.isAudioEnabled }));
+    };
 
     const sendResponse = async () => {
         if (!parsedData || !interviewId || !userResponse.trim()) return;
 
         setInterviewLoading(true);
 
-        // Add user message and typing indicator
+        // Add user message
         const updatedMessages = [
             ...interviewMessages,
             {
@@ -98,11 +269,9 @@ function InterviewPage() {
         ];
         setInterviewMessages(updatedMessages);
         setUserResponse('');
+        setInterimTranscript('');
 
         try {
-            // Simulate human response time (1-3 seconds)
-            await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
-
             const response = await fetch('http://localhost:5000/continue-interview', {
                 method: 'POST',
                 headers: {
@@ -153,6 +322,13 @@ function InterviewPage() {
     const endInterview = async () => {
         setInterviewLoading(true);
         try {
+            // Stop listening if we were
+            if (voiceControls.isListening) {
+                speechRecognition.current.stop();
+                setVoiceControls(prev => ({ ...prev, isListening: false }));
+                setIsSpeaking(false);
+            }
+
             // Add typing indicator
             setInterviewMessages(prev => [
                 ...prev,
@@ -162,9 +338,6 @@ function InterviewPage() {
                     isTyping: true
                 }
             ]);
-
-            // Simulate human response time
-            await new Promise(resolve => setTimeout(resolve, 1500));
 
             setInterviewMessages(prev => [
                 ...prev.slice(0, -1),
@@ -215,6 +388,27 @@ function InterviewPage() {
                                 )}
                             </div>
                         )}
+                        <div className="flex items-center gap-4">
+                            <button
+                                onClick={toggleAudio}
+                                disabled={interviewLoading}
+                                className={`p-2 rounded-full ${voiceControls.isAudioEnabled ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-600'}`}
+                                title={voiceControls.isAudioEnabled ? 'Mute voice' : 'Unmute voice'}
+                            >
+                                {voiceControls.isAudioEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
+                            </button>
+                            
+                            {interviewStatus === 'in_progress' && (
+                                <button
+                                    onClick={toggleListening}
+                                    disabled={interviewLoading || voiceControls.isSpeaking}
+                                    className={`p-2 rounded-full ${voiceControls.isListening ? (isSpeaking ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600') : 'bg-gray-100 text-gray-600'}`}
+                                    title={voiceControls.isListening ? (isSpeaking ? 'Listening...' : 'Stop listening') : 'Answer by voice'}
+                                >
+                                    <Mic className="w-5 h-5" />
+                                </button>
+                            )}
+                        </div>
                         {interviewStatus === 'in_progress' && (
                             <button
                                 onClick={endInterview}
@@ -310,31 +504,51 @@ function InterviewPage() {
                     {interviewStatus === 'in_progress' ? (
                         <div className="border-t border-gray-200 p-4">
                             <div className="flex gap-2">
-                                <input
-                                    type="text"
-                                    value={userResponse}
-                                    onChange={(e) => setUserResponse(e.target.value)}
-                                    disabled={interviewLoading}
-                                    placeholder="Type your response here..."
-                                    className="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                    onKeyPress={(e) => {
-                                        if (e.key === 'Enter' && !interviewLoading) {
-                                            sendResponse();
-                                        }
-                                    }}
-                                />
+                                <div className="relative flex-1">
+                                    <div className="w-full px-4 py-2 border border-gray-300 rounded-md bg-gray-50 min-h-12">
+                                        <p className="text-gray-700">
+                                            {userResponse || interimTranscript ? (
+                                                <>
+                                                    {userResponse && <span>{userResponse}</span>}
+                                                    {interimTranscript && (
+                                                        <span className="text-gray-500">
+                                                            {userResponse ? ' ' : ''}{interimTranscript}
+                                                        </span>
+                                                    )}
+                                                </>
+                                            ) : (
+                                                <span className="text-gray-500">
+                                                    {voiceControls.isListening 
+                                                        ? (isSpeaking ? "Listening..." : "Speak your answer...") 
+                                                        : "Click microphone to answer by voice"}
+                                                </span>
+                                            )}
+                                        </p>
+                                    </div>
+                                    {voiceControls.isListening && (
+                                        <div className="absolute inset-y-0 right-0 flex items-center pr-3">
+                                            <div className="flex space-x-1">
+                                                <div className={`w-2 h-2 rounded-full ${isSpeaking ? 'bg-green-500' : 'bg-gray-400'} animate-bounce`}></div>
+                                                <div className={`w-2 h-2 rounded-full ${isSpeaking ? 'bg-green-500' : 'bg-gray-400'} animate-bounce`} style={{animationDelay: '0.2s'}}></div>
+                                                <div className={`w-2 h-2 rounded-full ${isSpeaking ? 'bg-green-500' : 'bg-gray-400'} animate-bounce`} style={{animationDelay: '0.4s'}}></div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
                                 <button
-                                    onClick={sendResponse}
-                                    disabled={interviewLoading || !userResponse.trim()}
-                                    className={`px-4 py-2 rounded-md text-white ${
-                                        interviewLoading || !userResponse.trim()
-                                            ? 'bg-gray-400'
-                                            : 'bg-blue-600 hover:bg-blue-700'
-                                    }`}
+                                    onClick={toggleListening}
+                                    disabled={interviewLoading || voiceControls.isSpeaking}
+                                    className={`p-2 rounded-full ${voiceControls.isListening ? (isSpeaking ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600') : 'bg-blue-100 text-blue-600'}`}
+                                    title={voiceControls.isListening ? (isSpeaking ? 'Listening...' : 'Stop listening') : 'Answer by voice'}
                                 >
-                                    <Send className="w-5 h-5" />
+                                    <Mic className="w-5 h-5" />
                                 </button>
                             </div>
+                            {voiceControls.isListening && (
+                                <div className="mt-2 text-xs text-gray-500">
+                                    {isSpeaking ? "Speak naturally - your answer will auto-submit when you pause" : "Waiting for your response..."}
+                                </div>
+                            )}
                         </div>
                     ) : interviewStatus === 'completed' && (
                         <div className="border-t border-gray-200 p-4 bg-green-50">
